@@ -1,108 +1,98 @@
 from flask import Flask, render_template, request, redirect, url_for, flash
-import re
-from datetime import datetime, timedelta
+import os
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key_here'
+app.secret_key = "supersecretkey123"  # Required for flash messages
 
+# Simple in-memory task list (use DB for production)
 scheduled_tasks = []
 
-def mock_nlp_parse(text):
-    time_match = re.search(r'(\d{1,2})(:\d{2})?\s?(AM|PM)?', text, re.IGNORECASE)
-    if time_match:
-        hour = int(time_match.group(1))
-        minute = int(time_match.group(2)[1:]) if time_match.group(2) else 0
-        meridian = time_match.group(3)
-        if meridian and meridian.upper() == 'PM' and hour != 12:
-            hour += 12
-        elif meridian and meridian.upper() == 'AM' and hour == 12:
-            hour = 0
-        time_str = f"{hour:02d}:{minute:02d}"
-    else:
-        time_str = "09:00"
-
-    if 'tomorrow' in text.lower():
-        date_obj = datetime.now() + timedelta(days=1)
-    elif 'next week' in text.lower():
-        date_obj = datetime.now() + timedelta(days=7)
-    else:
-        date_obj = datetime.now()
-
-    date_str = date_obj.strftime("%Y-%m-%d")
-
-    task = re.sub(r'(\d{1,2})(:\d{2})?\s?(AM|PM)?', '', text, flags=re.IGNORECASE)
-    task = re.sub(r'\b(tomorrow|next week)\b', '', task, flags=re.IGNORECASE)
-    task = task.strip().strip('"').strip("'")
-
-    return {
-        "task": task,
-        "date": date_str,
-        "time": time_str
-    }
-
-def check_conflict(new_task, exclude_index=None):
-    for i, t in enumerate(scheduled_tasks):
-        if i == exclude_index:
-            continue
-        if t['date'] == new_task['date'] and t['time'] == new_task['time']:
-            return True
-    return False
-
-@app.route('/', methods=['GET', 'POST'])
+@app.route("/", methods=["GET", "POST"])
 def index():
-    if request.method == 'POST':
-        task_text = request.form.get('task_text')
-        if not task_text:
-            flash("Please enter a task.", "warning")
-            return redirect(url_for('index'))
+    if request.method == "POST":
+        task_text = request.form.get("task_text")
+        if not task_text.strip():
+            flash("Task cannot be empty!", "danger")
+            return redirect(url_for("index"))
 
-        parsed_task = mock_nlp_parse(task_text)
-        if check_conflict(parsed_task):
-            flash(f"Conflict detected! You already have a task at {parsed_task['time']} on {parsed_task['date']}.", "danger")
-        else:
-            scheduled_tasks.append(parsed_task)
-            flash(f"Task scheduled: '{parsed_task['task']}' on {parsed_task['date']} at {parsed_task['time']}", "success")
+        # Very basic parser: split by ' on ' and ' at '
+        # In real app, replace with NLP or dateparser
+        try:
+            if " on " in task_text and " at " in task_text:
+                task_part, rest = task_text.split(" on ", 1)
+                date_part, time_part = rest.split(" at ", 1)
+                task = {
+                    "task": task_part.strip(),
+                    "date": date_part.strip(),
+                    "time": time_part.strip(),
+                }
+                # Check conflict
+                for t in scheduled_tasks:
+                    if t["date"] == task["date"] and t["time"] == task["time"]:
+                        flash("⚠️ Conflict detected! Task at this date and time already exists.", "warning")
+                        return redirect(url_for("index"))
 
-        return redirect(url_for('index'))
+                scheduled_tasks.append(task)
+                flash("✅ Task scheduled successfully!", "success")
+            else:
+                flash("Please enter task in format: Task on YYYY-MM-DD at HH:MM", "warning")
+        except Exception as e:
+            flash(f"Error parsing task: {str(e)}", "danger")
 
-    return render_template('index.html', tasks=scheduled_tasks)
+        return redirect(url_for("index"))
 
-# Route to show the edit form
-@app.route('/edit/<int:task_id>', methods=['GET', 'POST'])
+    return render_template("index.html", tasks=scheduled_tasks)
+
+
+@app.route("/edit/<int:task_id>", methods=["GET", "POST"])
 def edit_task(task_id):
     if task_id < 0 or task_id >= len(scheduled_tasks):
-        flash("Task not found.", "danger")
-        return redirect(url_for('index'))
+        flash("Task not found!", "danger")
+        return redirect(url_for("index"))
 
     task = scheduled_tasks[task_id]
 
-    if request.method == 'POST':
-        new_text = request.form.get('task_text')
-        if not new_text:
-            flash("Please enter a task.", "warning")
-            return redirect(url_for('edit_task', task_id=task_id))
+    if request.method == "POST":
+        new_text = request.form.get("task_text")
+        if not new_text.strip():
+            flash("Task cannot be empty!", "danger")
+            return redirect(url_for("edit_task", task_id=task_id))
 
-        new_parsed_task = mock_nlp_parse(new_text)
-        if check_conflict(new_parsed_task, exclude_index=task_id):
-            flash(f"Conflict detected! You already have a task at {new_parsed_task['time']} on {new_parsed_task['date']}.", "danger")
-            return redirect(url_for('edit_task', task_id=task_id))
+        try:
+            if " on " in new_text and " at " in new_text:
+                task_part, rest = new_text.split(" on ", 1)
+                date_part, time_part = rest.split(" at ", 1)
+                # Check conflict excluding current task
+                for i, t in enumerate(scheduled_tasks):
+                    if i != task_id and t["date"] == date_part.strip() and t["time"] == time_part.strip():
+                        flash("⚠️ Conflict detected! Task at this date and time already exists.", "warning")
+                        return redirect(url_for("edit_task", task_id=task_id))
 
-        scheduled_tasks[task_id] = new_parsed_task
-        flash("Task updated successfully.", "success")
-        return redirect(url_for('index'))
+                scheduled_tasks[task_id] = {
+                    "task": task_part.strip(),
+                    "date": date_part.strip(),
+                    "time": time_part.strip(),
+                }
+                flash("✅ Task updated successfully!", "success")
+                return redirect(url_for("index"))
+            else:
+                flash("Please enter task in format: Task on YYYY-MM-DD at HH:MM", "warning")
+        except Exception as e:
+            flash(f"Error parsing task: {str(e)}", "danger")
 
-    return render_template('edit.html', task=task, task_id=task_id)
+    return render_template("edit.html", task=task)
 
-# Route to delete a task
-@app.route('/delete/<int:task_id>', methods=['POST'])
+
+@app.route("/delete/<int:task_id>", methods=["POST"])
 def delete_task(task_id):
     if task_id < 0 or task_id >= len(scheduled_tasks):
-        flash("Task not found.", "danger")
+        flash("Task not found!", "danger")
     else:
         scheduled_tasks.pop(task_id)
-        flash("Task deleted successfully.", "success")
-    return redirect(url_for('index'))
+        flash("✅ Task deleted successfully!", "success")
+    return redirect(url_for("index"))
 
-if __name__ == '__main__':
-    app.run(debug=True)
 
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
